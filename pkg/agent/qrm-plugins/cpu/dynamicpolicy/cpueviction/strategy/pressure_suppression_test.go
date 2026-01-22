@@ -37,11 +37,9 @@ import (
 	"github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/commonstate"
 	qrmstate "github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/cpu/dynamicpolicy/state"
 	"github.com/kubewharf/katalyst-core/pkg/config"
-	pkgconsts "github.com/kubewharf/katalyst-core/pkg/consts"
 	"github.com/kubewharf/katalyst-core/pkg/metaserver/agent/metric"
 	"github.com/kubewharf/katalyst-core/pkg/metrics"
 	"github.com/kubewharf/katalyst-core/pkg/util/machine"
-	utilmetric "github.com/kubewharf/katalyst-core/pkg/util/metric"
 )
 
 const (
@@ -81,8 +79,6 @@ func TestCPUPressureSuppression_GetEvictPods(t *testing.T) {
 
 	as := require.New(t)
 
-	now := time.Now()
-
 	pod1UID := string(uuid.NewUUID())
 	pod1Name := "pod-1"
 	pod2UID := string(uuid.NewUUID())
@@ -91,7 +87,7 @@ func TestCPUPressureSuppression_GetEvictPods(t *testing.T) {
 	tests := []struct {
 		name               string
 		podEntries         qrmstate.PodEntries
-		setFakeMetric      func(store *metric.FakeMetricsFetcher)
+		numaHeadroom       map[int]float64
 		wantEvictPodUIDSet sets.String
 	}{
 		{
@@ -154,23 +150,8 @@ func TestCPUPressureSuppression_GetEvictPods(t *testing.T) {
 					},
 				},
 			},
+			numaHeadroom:       map[int]float64{0: 1.0, 1: 1.0, 2: 1.0, 3: 1.0},
 			wantEvictPodUIDSet: sets.NewString(),
-			setFakeMetric: func(store *metric.FakeMetricsFetcher) {
-				store.SetCPUMetric(1, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(3, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(4, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(5, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(6, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(9, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(11, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(12, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(13, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(14, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-
-				store.SetCgroupMetric("test", pkgconsts.MetricCPUUsageCgroup, utilmetric.MetricData{Value: 5, Time: &now})
-				store.SetCgroupMetric("test", pkgconsts.MetricCPUQuotaCgroup, utilmetric.MetricData{Value: 20000, Time: &now})
-				store.SetCgroupMetric("test", pkgconsts.MetricCPUPeriodCgroup, utilmetric.MetricData{Value: 1000, Time: &now})
-			},
 		},
 		{
 			name: "over tolerance rate",
@@ -269,23 +250,8 @@ func TestCPUPressureSuppression_GetEvictPods(t *testing.T) {
 					},
 				},
 			},
+			numaHeadroom:       map[int]float64{0: 3.0, 1: 3.0, 2: 2.0, 3: 2.0},
 			wantEvictPodUIDSet: sets.NewString(pod1UID),
-			setFakeMetric: func(store *metric.FakeMetricsFetcher) {
-				store.SetCPUMetric(1, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(3, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(4, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(5, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(6, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(9, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(11, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(12, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(13, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(14, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-
-				store.SetCgroupMetric("test", pkgconsts.MetricCPUUsageCgroup, utilmetric.MetricData{Value: 5, Time: &now})
-				store.SetCgroupMetric("test", pkgconsts.MetricCPUQuotaCgroup, utilmetric.MetricData{Value: 20000, Time: &now})
-				store.SetCgroupMetric("test", pkgconsts.MetricCPUPeriodCgroup, utilmetric.MetricData{Value: 1000, Time: &now})
-			},
 		},
 		{
 			name: "over tolerance rate, because quota limited",
@@ -384,23 +350,8 @@ func TestCPUPressureSuppression_GetEvictPods(t *testing.T) {
 					},
 				},
 			},
-			wantEvictPodUIDSet: sets.NewString(pod1UID),
-			setFakeMetric: func(store *metric.FakeMetricsFetcher) {
-				store.SetCPUMetric(1, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(3, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(4, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(5, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(6, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(9, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(11, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(12, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(13, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-				store.SetCPUMetric(14, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.5, Time: &now})
-
-				store.SetCgroupMetric("test", pkgconsts.MetricCPUUsageCgroup, utilmetric.MetricData{Value: 55, Time: &now})
-				store.SetCgroupMetric("test", pkgconsts.MetricCPUQuotaCgroup, utilmetric.MetricData{Value: 5000, Time: &now})
-				store.SetCgroupMetric("test", pkgconsts.MetricCPUPeriodCgroup, utilmetric.MetricData{Value: 1000, Time: &now})
-			},
+			numaHeadroom:       map[int]float64{0: 0.5, 1: 0.5, 2: 0.5, 3: 0.5},
+			wantEvictPodUIDSet: sets.NewString(pod1UID, pod2UID),
 		},
 	}
 
@@ -414,8 +365,6 @@ func TestCPUPressureSuppression_GetEvictPods(t *testing.T) {
 			conf := makeSuppressionEvictionConf(defaultCPUMaxSuppressionToleranceRate, defaultCPUMinSuppressionToleranceDuration)
 
 			metricsFetcher := metric.NewFakeMetricsFetcher(metrics.DummyMetrics{})
-			store := metricsFetcher.(*metric.FakeMetricsFetcher)
-
 			metaServer := makeMetaServer(metricsFetcher, cpuTopology)
 			stateImpl, err := makeState(cpuTopology)
 			as.Nil(err)
@@ -424,10 +373,6 @@ func TestCPUPressureSuppression_GetEvictPods(t *testing.T) {
 			as.NotNil(plugin)
 
 			pods := make([]*v1.Pod, 0, len(tt.podEntries))
-
-			if tt.setFakeMetric != nil {
-				tt.setFakeMetric(store)
-			}
 
 			for entryName, entries := range tt.podEntries {
 				for subEntryName, entry := range entries {
@@ -466,6 +411,7 @@ func TestCPUPressureSuppression_GetEvictPods(t *testing.T) {
 				}
 			}
 
+			stateImpl.SetNUMAHeadroom(tt.numaHeadroom, false)
 			plugin.(*CPUPressureSuppression).state = stateImpl
 
 			resp, err := plugin.GetEvictPods(context.TODO(), &evictionpluginapi.GetEvictPodsRequest{

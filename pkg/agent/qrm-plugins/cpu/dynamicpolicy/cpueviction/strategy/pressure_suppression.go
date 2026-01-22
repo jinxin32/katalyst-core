@@ -33,7 +33,6 @@ import (
 	"github.com/kubewharf/katalyst-core/pkg/config"
 	"github.com/kubewharf/katalyst-core/pkg/config/agent/dynamic/adminqos/eviction"
 	"github.com/kubewharf/katalyst-core/pkg/metaserver"
-	"github.com/kubewharf/katalyst-core/pkg/metaserver/agent/metric/helper"
 	"github.com/kubewharf/katalyst-core/pkg/metrics"
 	"github.com/kubewharf/katalyst-core/pkg/util/cgroup/common"
 	"github.com/kubewharf/katalyst-core/pkg/util/general"
@@ -143,14 +142,14 @@ func (p *CPUPressureSuppression) evictNonActualNUMABindingPods(now time.Time, fi
 ) ([]*v1alpha1.EvictPod, error) {
 	nonActualNUMABindingCPUSet := machine.NewCPUSet()
 	nonActualNUMABindingNUMAs := p.state.GetMachineState().GetFilteredNUMASet(state.WrapAllocationMetaFilter((*commonstate.AllocationMeta).CheckReclaimedActualNUMABinding))
+	numaHeadroom := p.state.GetNUMAHeadroom()
+	if numaHeadroom == nil {
+		return nil, fmt.Errorf("get numa headroom failed")
+	}
+	headroomSupply := 0.0
 	for _, numaID := range nonActualNUMABindingNUMAs.ToSliceNoSortInt() {
 		nonActualNUMABindingCPUSet = nonActualNUMABindingCPUSet.Union(poolCPUSet.Intersection(p.metaServer.CPUDetails.CPUsInNUMANodes(numaID)))
-	}
-
-	// get reclaim metrics
-	reclaimMetrics, err := helper.GetReclaimMetrics(nonActualNUMABindingCPUSet, p.conf.ReclaimRelativeRootCgroupPath, p.metaServer.MetricsFetcher)
-	if err != nil {
-		return nil, fmt.Errorf("get reclaim metrics failed: %s", err)
+		headroomSupply += numaHeadroom[numaID]
 	}
 
 	filterPods := native.FilterPods(filteredPods, func(pod *v1.Pod) (bool, error) {
@@ -164,7 +163,7 @@ func (p *CPUPressureSuppression) evictNonActualNUMABindingPods(now time.Time, fi
 
 	general.InfoS("filterPods", "cpuSet",
 		nonActualNUMABindingCPUSet.String(), "podCount", len(filterPods))
-	return p.evictPodsByReclaimMetrics(now, filterPods, reclaimMetrics, evictionConfiguration)
+	return p.evictPodsByHeadroomSupply(now, filterPods, headroomSupply, evictionConfiguration)
 }
 
 func (p *CPUPressureSuppression) evictActualNUMABindingPods(now time.Time, filteredPods []*v1.Pod, poolCPUSet machine.CPUSet,
@@ -178,12 +177,11 @@ func (p *CPUPressureSuppression) evictActualNUMABindingPods(now time.Time, filte
 
 		actualNUMABindingCPUSet := poolCPUSet.Intersection(p.metaServer.CPUDetails.CPUsInNUMANodes(numaID))
 
-		// get reclaim metrics
-		reclaimMetrics, err := helper.GetReclaimMetrics(actualNUMABindingCPUSet,
-			reclaimRelativeRootCgroupPath, p.metaServer.MetricsFetcher)
-		if err != nil {
-			return nil, fmt.Errorf("get reclaim metrics failed: %s", err)
+		numaHeadroom := p.state.GetNUMAHeadroom()
+		if numaHeadroom == nil {
+			return nil, fmt.Errorf("get numa headroom failed")
 		}
+		headroomSupply := numaHeadroom[numaID]
 
 		filterPods := native.FilterPods(filteredPods, func(pod *v1.Pod) (bool, error) {
 			result, err := qos.GetActualNUMABindingResult(p.conf.QoSConfiguration, pod)
@@ -196,7 +194,7 @@ func (p *CPUPressureSuppression) evictActualNUMABindingPods(now time.Time, filte
 
 		general.InfoS("filterPods", "numaID", numaID, "cpuSet",
 			actualNUMABindingCPUSet.String(), "podCount", len(filterPods))
-		pods, err := p.evictPodsByReclaimMetrics(now, filterPods, reclaimMetrics, evictionConfiguration)
+		pods, err := p.evictPodsByHeadroomSupply(now, filterPods, headroomSupply, evictionConfiguration)
 		if err != nil {
 			return nil, err
 		}
@@ -207,24 +205,24 @@ func (p *CPUPressureSuppression) evictActualNUMABindingPods(now time.Time, filte
 	return evictPods, nil
 }
 
-func (p *CPUPressureSuppression) evictPodsByReclaimMetrics(now time.Time, filteredPods []*v1.Pod,
-	reclaimMetrics *helper.ReclaimMetrics, evictionConfiguration *eviction.CPUPressureEvictionConfiguration,
+func (p *CPUPressureSuppression) evictPodsByHeadroomSupply(now time.Time, filteredPods []*v1.Pod,
+	headroomSupply float64, evictionConfiguration *eviction.CPUPressureEvictionConfiguration,
 ) ([]*v1alpha1.EvictPod, error) {
 	totalCPURequest := resource.Quantity{}
 	for _, pod := range filteredPods {
 		totalCPURequest.Add(native.CPUQuantityGetter()(native.SumUpPodRequestResources(pod)))
 	}
 
-	general.InfoS("info", "reclaim cpu request", totalCPURequest.String(), "reclaimMetrics", reclaimMetrics)
+	general.InfoS("info", "reclaim cpu request", totalCPURequest.String(), "headroomSupply", headroomSupply)
 
 	var evictPods []*v1alpha1.EvictPod
 	for _, pod := range filteredPods {
 		key := native.GenerateUniqObjectNameKey(pod)
 		poolSuppressionRate := 0.0
-		if reclaimMetrics.ReclaimedCoresSupply == 0 {
+		if headroomSupply <= 0 {
 			poolSuppressionRate = math.MaxFloat64
 		} else {
-			poolSuppressionRate = float64(totalCPURequest.Value()) / reclaimMetrics.ReclaimedCoresSupply
+			poolSuppressionRate = float64(totalCPURequest.Value()) / headroomSupply
 		}
 		// TODO: consider the case that this Pod is throttled by other Pods
 
