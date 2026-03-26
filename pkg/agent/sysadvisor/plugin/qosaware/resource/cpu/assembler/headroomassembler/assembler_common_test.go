@@ -131,7 +131,7 @@ func TestHeadroomAssemblerCommon_GetHeadroom(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "normal report",
+			name: "report with invalid numa binding annotations",
 			fields: fields{
 				podList: []*v1.Pod{
 					{
@@ -276,7 +276,7 @@ func TestHeadroomAssemblerCommon_GetHeadroom(t *testing.T) {
 					require.NoError(t, err)
 				},
 			},
-			want: *resource.NewMilliQuantity(13000, resource.DecimalSI),
+			want: *resource.NewMilliQuantity(11666, resource.DecimalSI),
 		},
 		{
 			name: "limited by quota",
@@ -347,10 +347,10 @@ func TestHeadroomAssemblerCommon_GetHeadroom(t *testing.T) {
 					require.NoError(t, err)
 				},
 			},
-			want: *resource.NewQuantity(8, resource.DecimalSI),
+			want: *resource.NewQuantity(4, resource.DecimalSI),
 		},
 		{
-			name: "allow shared cores overlap reclaimed cores",
+			name: "high cpu utilization with small reclaim pool",
 			fields: fields{
 				allowSharedCoresOverlapReclaimedCores: true,
 				entries: map[string]*types.RegionInfo{
@@ -430,7 +430,7 @@ func TestHeadroomAssemblerCommon_GetHeadroom(t *testing.T) {
 					require.NoError(t, err)
 				},
 			},
-			want: *resource.NewQuantity(5, resource.DecimalSI),
+			want: *resource.NewQuantity(4, resource.DecimalSI),
 		},
 		{
 			name: "disable util based",
@@ -485,6 +485,28 @@ func TestHeadroomAssemblerCommon_GetHeadroom(t *testing.T) {
 		{
 			name: "gap by oversold ratio",
 			fields: fields{
+				podList: []*v1.Pod{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:        "reclaim-pod1",
+							Namespace:   "default",
+							UID:         "reclaim-uid1",
+							Annotations: map[string]string{consts.PodAnnotationQoSLevelKey: consts.PodAnnotationQoSLevelReclaimedCores},
+						},
+						Spec: v1.PodSpec{
+							Containers: []v1.Container{
+								{
+									Name: "container1",
+									Resources: v1.ResourceRequirements{
+										Requests: map[v1.ResourceName]resource.Quantity{
+											v1.ResourceCPU: resource.MustParse("5"),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
 				entries: map[string]*types.RegionInfo{
 					"share": {
 						RegionType:    configapi.QoSRegionTypeShare,
@@ -531,15 +553,26 @@ func TestHeadroomAssemblerCommon_GetHeadroom(t *testing.T) {
 				},
 				setFakeMetric: func(store *metric.FakeMetricsFetcher) {
 					for i := 0; i < 10; i++ {
-						store.SetCPUMetric(i, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Time: &now})
+						store.SetCPUMetric(i, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.1, Time: &now})
 					}
-					store.SetCgroupMetric("/kubepods/besteffort", pkgconsts.MetricCPUUsageCgroup, utilmetric.MetricData{Value: 0, Time: &now})
+					store.SetCgroupMetric("/kubepods/besteffort", pkgconsts.MetricCPUUsageCgroup, utilmetric.MetricData{Value: 1, Time: &now})
 					store.SetCgroupMetric("/kubepods/besteffort", pkgconsts.MetricCPUQuotaCgroup, utilmetric.MetricData{Value: -1, Time: &now})
 					store.SetCgroupMetric("/kubepods/besteffort", pkgconsts.MetricCPUPeriodCgroup, utilmetric.MetricData{Value: 1000, Time: &now})
 				},
 				setMetaCache: func(cache *metacache.MetaCacheImp) {
 					err := cache.SetPoolInfo(commonstate.PoolNameReclaim, &types.PoolInfo{
 						PoolName: commonstate.PoolNameReclaim,
+						TopologyAwareAssignments: map[int]machine.CPUSet{
+							0: machine.MustParse("0-9"),
+						},
+					})
+					require.NoError(t, err)
+					err = cache.AddContainer("reclaim-uid1", "container1", &types.ContainerInfo{
+						PodName:      "reclaim-pod1",
+						PodNamespace: "default",
+						PodUID:       "reclaim-uid1",
+						QoSLevel:     consts.PodAnnotationQoSLevelReclaimedCores,
+						CPURequest:   5,
 						TopologyAwareAssignments: map[int]machine.CPUSet{
 							0: machine.MustParse("0-9"),
 						},
@@ -597,10 +630,10 @@ func TestHeadroomAssemblerCommon_GetHeadroom(t *testing.T) {
 					},
 				},
 				setFakeMetric: func(store *metric.FakeMetricsFetcher) {
-					for i := 0; i < 96; i++ {
-						store.SetCPUMetric(i, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.9, Time: &now})
+					for i := 0; i < 10; i++ {
+						store.SetCPUMetric(i, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.1, Time: &now})
 					}
-					store.SetCgroupMetric("/kubepods/besteffort", pkgconsts.MetricCPUUsageCgroup, utilmetric.MetricData{Value: 9, Time: &now})
+					store.SetCgroupMetric("/kubepods/besteffort", pkgconsts.MetricCPUUsageCgroup, utilmetric.MetricData{Value: 1, Time: &now})
 					store.SetCgroupMetric("/kubepods/besteffort", pkgconsts.MetricCPUQuotaCgroup, utilmetric.MetricData{Value: -1, Time: &now})
 					store.SetCgroupMetric("/kubepods/besteffort", pkgconsts.MetricCPUPeriodCgroup, utilmetric.MetricData{Value: 1000, Time: &now})
 				},
@@ -614,7 +647,7 @@ func TestHeadroomAssemblerCommon_GetHeadroom(t *testing.T) {
 					require.NoError(t, err)
 				},
 			},
-			want: *resource.NewQuantity(14, resource.DecimalSI),
+			want: *resource.NewQuantity(8, resource.DecimalSI),
 		},
 		{
 			name: "limited by capacity",
@@ -667,9 +700,9 @@ func TestHeadroomAssemblerCommon_GetHeadroom(t *testing.T) {
 						CPUUtilBasedConfiguration: &cpuheadroom.CPUUtilBasedConfiguration{
 							Enable:                         true,
 							TargetReclaimedCoreUtilization: 0.6,
-							MaxReclaimedCoreUtilization:    0.8,
-							MaxOversoldRate:                1.5,
-							MaxHeadroomCapacityRate:        1.,
+							MaxReclaimedCoreUtilization:    0,
+							MaxOversoldRate:                0,
+							MaxHeadroomCapacityRate:        0.5,
 						},
 					},
 				},
@@ -693,7 +726,7 @@ func TestHeadroomAssemblerCommon_GetHeadroom(t *testing.T) {
 					require.NoError(t, err)
 				},
 			},
-			want: *resource.NewQuantity(96, resource.DecimalSI),
+			want: *resource.NewQuantity(48, resource.DecimalSI),
 		},
 		{
 			name: "numa-exclusive region headroom",
@@ -787,6 +820,9 @@ func TestHeadroomAssemblerCommon_GetHeadroom(t *testing.T) {
 					for i := 0; i < 96; i++ {
 						store.SetCPUMetric(i, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.3, Time: &now})
 					}
+					store.SetCgroupMetric("/kubepods/besteffort-0", pkgconsts.MetricCPUUsageCgroup, utilmetric.MetricData{Value: 14.4, Time: &now})
+					store.SetCgroupMetric("/kubepods/besteffort-0", pkgconsts.MetricCPUQuotaCgroup, utilmetric.MetricData{Value: -1, Time: &now})
+					store.SetCgroupMetric("/kubepods/besteffort-0", pkgconsts.MetricCPUPeriodCgroup, utilmetric.MetricData{Value: 1000, Time: &now})
 					store.SetCgroupMetric("/kubepods/besteffort", pkgconsts.MetricCPUUsageCgroup, utilmetric.MetricData{Value: 28.8, Time: &now})
 					store.SetCgroupMetric("/kubepods/besteffort", pkgconsts.MetricCPUQuotaCgroup, utilmetric.MetricData{Value: -1, Time: &now})
 					store.SetCgroupMetric("/kubepods/besteffort", pkgconsts.MetricCPUPeriodCgroup, utilmetric.MetricData{Value: 1000, Time: &now})
@@ -805,15 +841,80 @@ func TestHeadroomAssemblerCommon_GetHeadroom(t *testing.T) {
 						PodNamespace: "default",
 						PodUID:       "uid1",
 						QoSLevel:     consts.PodAnnotationQoSLevelDedicatedCores,
+						TopologyAwareAssignments: map[int]machine.CPUSet{
+							0: machine.MustParse("0-9"),
+						},
+					})
+					require.NoError(t, err)
+					err = cache.AddContainer("uid2", "container2", &types.ContainerInfo{
+						PodName:      "pod2",
+						PodNamespace: "default",
+						PodUID:       "uid2",
+						QoSLevel:     consts.PodAnnotationQoSLevelDedicatedCores,
+						TopologyAwareAssignments: map[int]machine.CPUSet{
+							0: machine.MustParse("0-9"),
+						},
 					})
 					require.NoError(t, err)
 				},
 			},
-			want: *resource.NewQuantity(68, resource.DecimalSI),
+			want: *resource.NewQuantity(84, resource.DecimalSI),
 		},
 		{
 			name: "numa-exclusive region headroom util",
 			fields: fields{
+				podList: []*v1.Pod{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:        "pod1",
+							Namespace:   "default",
+							UID:         "uid1",
+							Annotations: map[string]string{consts.PodAnnotationQoSLevelKey: consts.PodAnnotationQoSLevelDedicatedCores},
+						},
+						Spec: v1.PodSpec{
+							Containers: []v1.Container{
+								{
+									Name: "container1",
+									Resources: v1.ResourceRequirements{
+										Limits: map[v1.ResourceName]resource.Quantity{
+											v1.ResourceCPU:    resource.MustParse("4"),
+											v1.ResourceMemory: resource.MustParse("40Gi"),
+										},
+										Requests: map[v1.ResourceName]resource.Quantity{
+											v1.ResourceCPU:    resource.MustParse("2"),
+											v1.ResourceMemory: resource.MustParse("20Gi"),
+										},
+									},
+								},
+							},
+						},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:        "pod2",
+							Namespace:   "default",
+							UID:         "uid2",
+							Annotations: map[string]string{consts.PodAnnotationQoSLevelKey: consts.PodAnnotationQoSLevelDedicatedCores},
+						},
+						Spec: v1.PodSpec{
+							Containers: []v1.Container{
+								{
+									Name: "container2",
+									Resources: v1.ResourceRequirements{
+										Limits: map[v1.ResourceName]resource.Quantity{
+											v1.ResourceCPU:    resource.MustParse("4"),
+											v1.ResourceMemory: resource.MustParse("40Gi"),
+										},
+										Requests: map[v1.ResourceName]resource.Quantity{
+											v1.ResourceCPU:    resource.MustParse("2"),
+											v1.ResourceMemory: resource.MustParse("20Gi"),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
 				entries: map[string]*types.RegionInfo{
 					"dedicated": {
 						RegionType:    configapi.QoSRegionTypeDedicated,
@@ -851,6 +952,9 @@ func TestHeadroomAssemblerCommon_GetHeadroom(t *testing.T) {
 					for i := 0; i < 96; i++ {
 						store.SetCPUMetric(i, pkgconsts.MetricCPUUsageRatio, utilmetric.MetricData{Value: 0.3, Time: &now})
 					}
+					store.SetCgroupMetric("/kubepods/besteffort-0", pkgconsts.MetricCPUUsageCgroup, utilmetric.MetricData{Value: 14.4, Time: &now})
+					store.SetCgroupMetric("/kubepods/besteffort-0", pkgconsts.MetricCPUQuotaCgroup, utilmetric.MetricData{Value: -1, Time: &now})
+					store.SetCgroupMetric("/kubepods/besteffort-0", pkgconsts.MetricCPUPeriodCgroup, utilmetric.MetricData{Value: 1000, Time: &now})
 					store.SetCgroupMetric("/kubepods/besteffort", pkgconsts.MetricCPUUsageCgroup, utilmetric.MetricData{Value: 28.8, Time: &now})
 					store.SetCgroupMetric("/kubepods/besteffort", pkgconsts.MetricCPUQuotaCgroup, utilmetric.MetricData{Value: -1, Time: &now})
 					store.SetCgroupMetric("/kubepods/besteffort", pkgconsts.MetricCPUPeriodCgroup, utilmetric.MetricData{Value: 1000, Time: &now})
@@ -864,9 +968,29 @@ func TestHeadroomAssemblerCommon_GetHeadroom(t *testing.T) {
 						},
 					})
 					require.NoError(t, err)
+					err = cache.AddContainer("uid1", "container1", &types.ContainerInfo{
+						PodName:      "pod1",
+						PodNamespace: "default",
+						PodUID:       "uid1",
+						QoSLevel:     consts.PodAnnotationQoSLevelDedicatedCores,
+						TopologyAwareAssignments: map[int]machine.CPUSet{
+							0: machine.MustParse("0-9"),
+						},
+					})
+					require.NoError(t, err)
+					err = cache.AddContainer("uid2", "container2", &types.ContainerInfo{
+						PodName:      "pod2",
+						PodNamespace: "default",
+						PodUID:       "uid2",
+						QoSLevel:     consts.PodAnnotationQoSLevelDedicatedCores,
+						TopologyAwareAssignments: map[int]machine.CPUSet{
+							0: machine.MustParse("0-9"),
+						},
+					})
+					require.NoError(t, err)
 				},
 			},
-			want: *resource.NewQuantity(70, resource.DecimalSI),
+			want: *resource.NewMilliQuantity(59666, resource.DecimalSI),
 		},
 	}
 

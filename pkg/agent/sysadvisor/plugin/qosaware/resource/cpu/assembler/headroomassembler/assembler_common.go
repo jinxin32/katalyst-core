@@ -171,11 +171,8 @@ func (ha *HeadroomAssemblerCommon) getHeadroomByUtil() (resource.Quantity, map[i
 	numaHeadroom := make(map[int]resource.Quantity, ha.metaServer.NumNUMANodes)
 	totalHeadroom := resource.Quantity{}
 	dynamicConfig := ha.conf.GetDynamicConfiguration()
-	reclaimedCPUs, err := ha.getLastReclaimedCPUPerNUMA()
-	if err != nil {
-		general.Errorf("getLastReclaimedCPUPerNUMA failed: %v", err)
-		return resource.Quantity{}, nil, err
-	}
+
+	reclaimedPodsRequest := ha.getReclaimedPodsRequestPerNUMA()
 
 	// get headroom per NUMA
 	for _, numaID := range bindingNUMAs {
@@ -191,9 +188,9 @@ func (ha *HeadroomAssemblerCommon) getHeadroomByUtil() (resource.Quantity, map[i
 		}
 
 		numaOptions := helper.GenerateUtilBasedCapacityOptions(dynamicConfig, float64(ha.metaServer.NUMAToCPUs.CPUSizeInNUMAs(numaID)))
-		lastReclaimedCPUPerNumaForCalculate := make(map[int]float64)
-		lastReclaimedCPUPerNumaForCalculate[numaID] = reclaimedCPUs[numaID]
-		headroom, err := ha.getUtilBasedHeadroom(numaOptions, reclaimMetrics, lastReclaimedCPUPerNumaForCalculate)
+		reclaimedPodsRequestPerNuma := make(map[int]float64)
+		reclaimedPodsRequestPerNuma[numaID] = reclaimedPodsRequest[numaID]
+		headroom, err := ha.getUtilBasedHeadroom(numaOptions, reclaimMetrics, reclaimedPodsRequestPerNuma)
 		if err != nil {
 			return resource.Quantity{}, nil, fmt.Errorf("get util-based headroom failed with numa %d: %v", numaID, err)
 		}
@@ -205,7 +202,7 @@ func (ha *HeadroomAssemblerCommon) getHeadroomByUtil() (resource.Quantity, map[i
 	// get global reclaim headroom
 	if len(nonBindingNUMAs) > 0 {
 		cpusets := machine.NewCPUSet()
-		lastReclaimedCPUPerNumaForCalculate := make(map[int]float64)
+		reclaimedPodsRequestPerNuma := make(map[int]float64)
 		for _, numaID := range nonBindingNUMAs {
 			cpuSet, ok := reclaimPoolInfo.TopologyAwareAssignments[numaID]
 			if !ok {
@@ -213,7 +210,7 @@ func (ha *HeadroomAssemblerCommon) getHeadroomByUtil() (resource.Quantity, map[i
 			}
 
 			cpusets = cpusets.Union(cpuSet)
-			lastReclaimedCPUPerNumaForCalculate[numaID] = reclaimedCPUs[numaID]
+			reclaimedPodsRequestPerNuma[numaID] = reclaimedPodsRequest[numaID]
 		}
 
 		reclaimMetrics, err := metricHelper.GetReclaimMetrics(cpusets, common.GetReclaimRelativeRootCgroupPath(ha.conf.ReclaimRelativeRootCgroupPath, commonstate.FakedNUMAID), ha.metaServer.MetricsFetcher)
@@ -227,7 +224,7 @@ func (ha *HeadroomAssemblerCommon) getHeadroomByUtil() (resource.Quantity, map[i
 		}
 
 		globalOptions := helper.GenerateUtilBasedCapacityOptions(dynamicConfig, float64(totalCPUSize))
-		headroom, err := ha.getUtilBasedHeadroom(globalOptions, reclaimMetrics, lastReclaimedCPUPerNumaForCalculate)
+		headroom, err := ha.getUtilBasedHeadroom(globalOptions, reclaimMetrics, reclaimedPodsRequestPerNuma)
 		if err != nil {
 			return resource.Quantity{}, nil, fmt.Errorf("get util-based headroom failed: %v", err)
 		}

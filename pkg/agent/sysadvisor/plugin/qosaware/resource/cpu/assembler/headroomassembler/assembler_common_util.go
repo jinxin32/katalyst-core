@@ -30,7 +30,6 @@ import (
 	"github.com/kubewharf/katalyst-core/pkg/agent/sysadvisor/plugin/qosaware/resource/helper"
 	"github.com/kubewharf/katalyst-core/pkg/agent/sysadvisor/types"
 	metaserverHelper "github.com/kubewharf/katalyst-core/pkg/metaserver/agent/metric/helper"
-	"github.com/kubewharf/katalyst-core/pkg/util"
 	"github.com/kubewharf/katalyst-core/pkg/util/general"
 	"github.com/kubewharf/katalyst-core/pkg/util/native"
 )
@@ -41,7 +40,7 @@ const (
 
 func (ha *HeadroomAssemblerCommon) getUtilBasedHeadroom(options helper.UtilBasedCapacityOptions,
 	reclaimMetrics *metaserverHelper.ReclaimMetrics,
-	lastReclaimedCPUPerNumaForCalculate map[int]float64,
+	reclaimPodsRequestPerNuma map[int]float64,
 ) (resource.Quantity, error) {
 	if reclaimMetrics == nil {
 		return resource.Quantity{}, fmt.Errorf("reclaimMetrics is nil")
@@ -51,29 +50,43 @@ func (ha *HeadroomAssemblerCommon) getUtilBasedHeadroom(options helper.UtilBased
 		return *resource.NewQuantity(0, resource.DecimalSI), nil
 	}
 
-	lastReclaimedCPU := 0.0
-	for _, cpu := range lastReclaimedCPUPerNumaForCalculate {
-		lastReclaimedCPU += cpu
+	reclaimedRequest := 0.0
+	for _, request := range reclaimPodsRequestPerNuma {
+		reclaimedRequest += request
 	}
 
-	headroom, err := helper.EstimateUtilBasedCapacity(options, reclaimMetrics, lastReclaimedCPU)
+	headroom, err := helper.EstimateUtilBasedCapacity(options, reclaimMetrics, reclaimedRequest)
 	if err != nil {
 		return resource.Quantity{}, err
 	}
 
 	general.InfoS("getUtilBasedHeadroom", "reclaimMetrics", reclaimMetrics,
-		"lastReclaimedCPUPerNumaForCalculate", lastReclaimedCPUPerNumaForCalculate, "headroom", headroom)
+		"reclaimPodsRequestPerNuma", reclaimPodsRequestPerNuma, "headroom", headroom)
 
 	return *resource.NewMilliQuantity(int64(headroom*1000), resource.DecimalSI), nil
 }
 
-func (ha *HeadroomAssemblerCommon) getLastReclaimedCPUPerNUMA() (map[int]float64, error) {
-	cnr, err := ha.metaServer.CNRFetcher.GetCNR(context.Background())
-	if err != nil {
-		return nil, err
-	}
+func (ha *HeadroomAssemblerCommon) getReclaimedPodsRequestPerNUMA() map[int]float64 {
+	reclaimPodsRequest := make(map[int]float64)
+	ha.metaReader.RangeContainer(func(podUID string, containerName string, ci *types.ContainerInfo) bool {
+		if ci.QoSLevel != consts.PodAnnotationQoSLevelReclaimedCores {
+			return true
+		}
 
-	return util.GetReclaimedCPUPerNUMA(cnr.Status.TopologyZone), nil
+		pod, err := ha.metaServer.GetPod(context.Background(), podUID)
+		if err != nil || !native.PodIsActive(pod) {
+			return true
+		}
+
+		if ci.CPURequest > 0 && len(ci.TopologyAwareAssignments) > 0 {
+			requestPerNuma := ci.CPURequest / float64(len(ci.TopologyAwareAssignments))
+			for numaID := range ci.TopologyAwareAssignments {
+				reclaimPodsRequest[numaID] += requestPerNuma
+			}
+		}
+		return true
+	})
+	return reclaimPodsRequest
 }
 
 func (ha *HeadroomAssemblerCommon) getReclaimNUMABindingTopo(reclaimPool *types.PoolInfo) (bindingNUMAs, nonBindingNumas []int, err error) {
