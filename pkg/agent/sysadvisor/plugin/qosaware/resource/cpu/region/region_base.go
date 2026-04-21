@@ -776,7 +776,13 @@ func (r *QoSRegionBase) getIndicators() (types.Indicator, error) {
 			return nil, err
 		}
 
-		target := r.getIndicatorTarget(indicatorName, defaultTarget)
+		target := defaultTarget
+		if timeTarget, matched := r.conf.GetDynamicConfiguration().GetIndicatorTimeTarget(r.regionType, indicatorName); matched {
+			target = timeTarget
+			general.InfoS("use time target for indicator, note that expand factors are not applied to time targets", "indicatorName", indicatorName, "timeTarget", timeTarget)
+		} else {
+			target = r.getIndicatorTarget(indicatorName, defaultTarget)
+		}
 
 		indicatorValue := types.IndicatorValue{
 			Current: current,

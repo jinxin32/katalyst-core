@@ -17,6 +17,7 @@ limitations under the License.
 package advisor
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -33,6 +34,7 @@ import (
 type CPUProvisionOptions struct {
 	AllowSharedCoresOverlapReclaimedCores       bool
 	RegionIndicatorTargetOptions                map[string]string
+	RegionIndicatorTimeTargetOptions            map[string]string
 	IndicatorTargetGetters                      map[string]string
 	IndicatorTargetDefaultGetter                string
 	IndicatorTargetMetricThresholdExpandFactors map[string]string
@@ -42,6 +44,7 @@ func NewCPUProvisionOptions() *CPUProvisionOptions {
 	return &CPUProvisionOptions{
 		AllowSharedCoresOverlapReclaimedCores:       false,
 		RegionIndicatorTargetOptions:                map[string]string{},
+		RegionIndicatorTimeTargetOptions:            map[string]string{},
 		IndicatorTargetGetters:                      map[string]string{},
 		IndicatorTargetDefaultGetter:                string(consts.IndicatorTargetGetterSPDMin),
 		IndicatorTargetMetricThresholdExpandFactors: map[string]string{},
@@ -90,6 +93,18 @@ func (o *CPUProvisionOptions) ApplyTo(c *advisor.CPUProvisionConfiguration) erro
 		}
 	}
 
+	if len(o.RegionIndicatorTimeTargetOptions) > 0 {
+		c.RegionIndicatorTimeTargetConfiguration = make(map[v1alpha1.QoSRegionType]map[workloadapi.ServiceSystemIndicatorName]v1alpha1.IndicatorTimeTargetSlots)
+		for regionType, strategyJSON := range o.RegionIndicatorTimeTargetOptions {
+			strategy := make(map[workloadapi.ServiceSystemIndicatorName]v1alpha1.IndicatorTimeTargetSlots)
+			if err := json.Unmarshal([]byte(strategyJSON), &strategy); err != nil {
+				errList = append(errList, fmt.Errorf("failed to parse region-indicator-time-targets for region %v: %v", regionType, err))
+				continue
+			}
+			c.RegionIndicatorTimeTargetConfiguration[v1alpha1.QoSRegionType(regionType)] = strategy
+		}
+	}
+
 	return errors.NewAggregate(errList)
 }
 
@@ -106,4 +121,6 @@ func (o *CPUProvisionOptions) AddFlags(fss *cliflag.NamedFlagSets) {
 		"default indicator target getter func like spd-avg")
 	fs.StringToStringVar(&o.IndicatorTargetMetricThresholdExpandFactors, "indicator-target-metric-threshold-expand-factors", o.IndicatorTargetMetricThresholdExpandFactors,
 		"indicator target expand factor, in format like cpu_usage_ratio=1.1,cpi=1.2")
+	fs.StringToStringVar(&o.RegionIndicatorTimeTargetOptions, "region-indicator-time-targets", o.RegionIndicatorTimeTargetOptions,
+		"indicator targets for each region at different time periods, key is regionType, value is JSON mapping indicator name to time target slots")
 }
